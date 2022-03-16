@@ -1,4 +1,4 @@
-# Reference: protonesso/crossdev (GitLab); iglunix/iglunix-autobuild (iglunix)
+# Reference: protonesso/crossdev (GitLab); iglunix/iglunix-bootstrap (iglunix)
 
 msg() {
 echo ">> $@..."
@@ -13,24 +13,78 @@ err "$@"
 exit 1
 }
 
-if test "$1" = "--help"; then
-	echo "Hanh Linux clang toolchain building script"
-	echo "Requirements: clang, lld, llvm, libcxx, libcxxabi, libunwind,..."
-fi
-
-if ! command -v clang > /dev/null 2>&1; then
-die "clang not found!"
-fi
-
 eval "$*"
+
+source $(pwd)/build.conf
+export $USE_FLAGS
+
+if test -n "$help"; then
+	echo "Hanh Linux clang toolchain building script (for x86_64)"
+	echo "- Requirements:" 
+	echo "     + libcxx, libcxxabi, libunwind"
+	echo "     + clang, lld, llvm"
+	echo "     + ninja, cmake, make, sh, base packages" 
+	echo "- Build step: "
+	echo "-----------------------------------------------------------"
+	echo " Step                          - Controlling var=value     "
+	echo "-----------------------------------------------------------"
+	echo "     Clean                     -    if clean=yes           "
+	echo "     Download sources          - no if no_download=yes     "
+	echo "     Unpack sources            - no if no_unpack=yes       "
+	echo "     Build compiler-rt         - no if no_compiler_rt=yes  "
+	echo "     Build libunwind           - no if no_libunwind=yes    "
+	echo "     Build libcxxabi           - no if no_libcxxabi=yes    "
+	echo "     Build LLVM tree*          - no if no_llvm=yes         "
+	echo "     Create cross binaries     - no if no_llvm_bin=yes     "
+	echo "     Build Musl libc           - no if no_musl=yes         "
+	echo "-----------------------------------------------------------"
+	echo "*: LLVM tree contains: LLVM, Clang, LLD, libc++"
+	echo "- Controlling variables: "
+	echo "p=<non-empty value>         parallel build"
+	echo "host=<non-empty value>      set host triple"
+	echo "NINJA=<path to ninja>       set ninja builder"
+	echo "MK=<path to make>           set make builder"
+	echo "See build.conf for more values"
+	exit 0
+fi
+
+test -z "$downloader" && downloader="wget --no-check-certificate -nc"
+test -z $MK           && MK=make
+test -z $NINJA        && NINJA=ninja
+bin_download=$(echo $downloader | cut -d " " -f 1)
+
+for cmd in clang llvm-ar ld.lld $NINJA $MK $bin_download; do 
+if ! command -v $cmd > /dev/null 2>&1; then
+test "$cmd" = "llvm-ar" && cmd=LLVM
+die "$cmd not found!"
+fi
+done
+
+for library in libc++.so libc++abi.so libunwind.so; do 
+if test -z $(whereis $library | cut -d " " -f 2); then
+die "$library not found"
+fi
+done
 
 if test -z "$host"; then
 	host=$(clang -dumpmachine)
 fi
-if test -z "$p"; then
-	core=1
+
+if test -z "$core"; then
+	if test -z "$p"; then
+		parallel=no
+		core=1
+	else
+		core=$(nproc)
+		parallel="yes (Number of cores: $core)"
+	fi
 else
-	core=$(nproc)
+	test "$core" -lt 1 && die "Core number must be above than 1"
+	if test "$core" = 1; then 
+		parallel=no 
+	else
+		parallel="yes (Number of cores: $core)"
+	fi
 fi
 
 arch=x86_64
@@ -43,23 +97,67 @@ srcdir=$workdir/src
 sourcedir=$workdir/sources
 toolchain=$workdir/toolchain
 
-source $workdir/build.conf
-export $USE_FLAGS
-
-if test -z "$downloader"; then
-	downloader="wget --no-check-certificate -nc"
-fi
 vmusl="1.2.2"
 vllvm="13.0.0"
-kver=5.15.16
+
+test -n "$no_download"     && download=no      || download=yes
+test -n "$no_unpack"       && unpack=no        || unpack=yes
+test -n "$no_compiler_rt"  && compiler_rt=no   || compiler_rt=yes
+test -n "$no_libunwind"    && unwind=no        || unwind=yes
+test -n "$no_libcxxabi"    && libcxxabi=no     || libcxxabi=yes
+test -n "$no_llvm"         && llvm=no          || llvm=yes
+test -n "$no_llvm_bin"     && llvm_bin=no      || llvm_bin=yes
+test -n "$no_musl"         && musl=no          || musl=yes
+test -z "$clean"           && clean_build=no   || clean_build=yes
+
+echo "Printing summary"
+echo "=Build steps==========================================="
+echo "Clean build               : $clean_build"
+echo "Download sources          : $download"
+echo "Unpack sources            : $unpack"
+echo "Build compiler-rt         : $compiler_rt"
+echo "Build libunwind           : $unwind"
+echo "Build libcxxabi           : $libcxxabi" 
+echo "Build LLVM tree           : $llvm "
+echo "Create cross binaries     : $llvm_bin"
+echo "Build Musl libc           : $musl "
+echo "=Compilation tools====================================="
+echo "C compiler                : $CC "
+echo "C++ compiler              : $CXX"
+echo "Linker                    : $LD "
+echo "AR                        : $AR "
+echo "RANLIB                    : $RANLIB"
+echo "NM                        : $NM"
+echo "STRIP                     : $STRIP" 
+echo "OBJCOPY                   : $OBJCOPY" 
+echo "OBJDUMP                   : $OBJDUMP"
+echo "READELF                   : $READELF"
+echo "SIZE                      : $SIZE"
+echo "=Compilation flags====================================="
+echo "Host triple               : $host"
+echo "Target triple             : $target"
+echo "Parallel build            : $parallel"  
+echo "CFLAGS                    "
+echo "       $CFLAGS"
+echo "CXXFLAGS                  "
+echo "       $CXXFLAGS"
+echo "LDFLAGS                   "
+echo "       $LDFLAGS"
+echo "=Other tools==========================================="
+echo "Download command          : $downloader"
+echo "Ninja builder             : $NINJA"
+echo "Makefile builder          : $MK"
+sleep 5 
+
 
 eval LLVM_CPPFLAGS="-I$toolchain/include"
-if test "$clean" = "yes"; then
+if test -n "$clean"; then
 rm -rf $sysdir $toolchain $srcdir
 fi
 mkdir -p $sysdir $srcdir $sourcedir $toolchain
 
-msg Downloading neccessary files
+if test -z "$no_download"; then
+msg Downloading source code
 cd $sourcedir
 # No kernel download. 
 eval $downloader https://musl.libc.org/releases/musl-$vmusl.tar.gz 
@@ -70,6 +168,7 @@ eval $downloader https://github.com/llvm/llvm-project/releases/download/llvmorg-
 eval $downloader https://github.com/llvm/llvm-project/releases/download/llvmorg-$vllvm/libunwind-$vllvm.src.tar.xz
 eval $downloader https://github.com/llvm/llvm-project/releases/download/llvmorg-$vllvm/libcxx-$vllvm.src.tar.xz
 eval $downloader https://github.com/llvm/llvm-project/releases/download/llvmorg-$vllvm/libcxxabi-$vllvm.src.tar.xz
+fi
 
 if test -z "$no_unpack"; then
 # All projects now need to be in a monopoly layout
@@ -91,9 +190,30 @@ mv libcxx-$vllvm.src libcxx
 cp -r libcxx llvm/projects/libcxx
 tar -xf $sourcedir/libcxxabi-$vllvm.src.tar.xz
 mv libcxxabi-$vllvm.src libcxxabi
-cp -r libcxxabi llvm/projects/libcxxabi
 tar -xf $sourcedir/musl-$vmusl.tar.gz
-# tar -xf $sourcedir/linux-$kver.tar.xz
+fi
+
+if test -z "$no_compiler_rt"; then 
+msg Configuring compiler-rt
+cd $srcdir/compiler-rt
+cmake -S . -B build \
+	-DCMAKE_INSTALL_PREFIX=$toolchain \
+	-DCOMPILER_RT_BUILD_BUILTINS=ON \
+	-DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
+	-DCOMPILER_RT_INCLUDE_TESTS=OFF \
+	-DCOMPILER_RT_BUILD_MEMPROF=OFF \
+	-DCOMPILER_RT_BUILD_PROFILE=OFF \
+	-DCOMPILER_RT_BUILD_SANITIZERS=OFF \
+	-DCOMPILER_RT_BUILD_XRAY=OFF \
+	-DCOMPILER_RT_DEFAULT_TARGET_TRIPLE=$target \
+	-DCOMPILER_RT_DEFAULT_TARGET_ONLY=OFF  \
+	-DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON \
+	-Wno-dev -G "Ninja"
+msg Building compiler-rt
+cd build
+ninja -j$core || die Failed to build compiler-rt
+msg Installing compiler-rt 
+ninja -j$core install || die Failed to install compiler-rt
 fi
 
 if test -z "$no_libunwind"; then 
@@ -101,35 +221,46 @@ if test -z "$no_libunwind"; then
 msg Configuring libunwind
 cd $srcdir/libunwind 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=MinSizeRel \
-	-DCMAKE_C_COMPILER=clang \
-	-DCMAKE_CXX_COMPILER=clang++ \
-	-DCMAKE_C_FLAGS="$CFLAGS $UNWIND_FLAGS" \
-	-DCMAKE_CXX_FLAGS="$CXXFLAGS $UNWIND_FLAGS" \
 	-DCMAKE_INSTALL_PREFIX=$toolchain \
 	-DLIBUNWIND_USE_COMPILER_RT=ON       \
-	-Wno-dev -G "Ninja"
+	-Wno-dev -G "Ninja" || die Failed to configure libunwind
 msg Building libunwind
 cd build
-ninja -j$core unwind || exit 1
+eval $NINJA -j$core unwind || die Failed to build libunwind
 msg Installing libunwind
-ninja -j$core install-unwind || exit 1
+eval $NINJA -j$core install-unwind || die Failed to install libunwind
 
 cd ..
-install -dm755 $toolchain/include/mach-o
+install -dm755 $toolchain/include/mach-o || die Failed to install libunwind
 # Install header to prevent failure with llvm
-install -Dm755 include/mach-o/compact_unwind_encoding.h $toolchain/include/mach-o/compact_unwind_encoding.h
+install -Dm755 include/mach-o/compact_unwind_encoding.h $toolchain/include/mach-o/compact_unwind_encoding.h || die Failed to install libunwind
+fi
+
+if test -z "$no_libcxxabi"; then
+msg Configuring libcxxabi 
+cd $srcdir/libcxxabi
+cmake -S . -B build \
+	-DCMAKE_INSTALL_PREFIX=$toolchain \
+	-DLIBCXXABI_USE_COMPILER_RT=ON \
+	-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+	-DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=YES \
+	-Wno-dev -G "Ninja" || die Failed to configure libcxxabi
+msg Building libcxxabi
+cd build 
+eval $NINJA -j$core || die Failed to build libcxxabi
+msg Installing libcxxabi 
+eval $NINJA -j$core install || die Failed to install libcxxabi
 fi
 
 if test -z "$no_llvm"; then
 # Source: ataraxialinux/crossdev/packages/build_llvm()
+# and iglunix/iglunix-bootstrap/boot-libcxx.sh
 # Build a complete llvm tree
 msg Configuring LLVM tree 
 cd $srcdir/llvm
 cmake -S . -B build \
 	-DCMAKE_INSTALL_PREFIX="$toolchain" \
 	-DCMAKE_BUILD_TYPE=MinSizeRel \
-	-DCMAKE_C_FLAGS="$CFLAGS $LLVM_CPPFLAGS" \
-	-DCMAKE_CXX_FLAGS="$CXXFLAGS $LLVM_CPPFLAGS" \
 	-DLLVM_DEFAULT_TARGET_TRIPLE=$target \
 	-DLLVM_ENABLE_LLD=ON \
 	-DLLVM_HOST_TRIPLE=$host \
@@ -146,20 +277,24 @@ cmake -S . -B build \
 	-DCLANG_DEFAULT_UNWINDLIB=libunwind \
 	-DCLANG_INCLUDE_TESTS=OFF \
 	-DCLANG_VENDOR=Hanh \
-	-DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
-	-DCOMPILER_RT_BUILD_MEMPROF=OFF \
-	-DCOMPILER_RT_BUILD_PROFILE=OFF \
-	-DCOMPILER_RT_BUILD_SANITIZERS=OFF \
-	-DCOMPILER_RT_BUILD_XRAY=OFF \
-	-DCOMPILER_RT_DEFAULT_TARGET_TRIPLE=$target \
+	-DLIBCXX_HAS_MUSL_LIBC=ON \
+	-DLIBCXX_USE_COMPILER_RT=ON \
+	-DLIBCXX_CXX_ABI=ON \
+	-DLIBCXX_HAS_ATOMIC_LIB=OFF \
+	-DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=ON \
+	-DLIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY=ON \
+	-DLIBCXX_ABI_LIBRARY_PATH=$toolchain/lib \
+	-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+	-DLIBCXXABI_USE_COMPILER_RT=ON \
+	-DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=YES \
 	-DENABLE_LINKER_BUILD_ID=ON \
 	-DDEFAULT_SYSROOT=$sysdir \
-	-Wno-dev -G "Ninja"
+	-Wno-dev -G "Ninja" || die Failed to configure LLVM tree
 cd build
 msg Building LLVM tree
-ninja -j$core || exit 1
+eval $NINJA -j$core || die Failed to build LLVM tree
 msg Installing LLVM tree
-ninja -j$core install || exit 1
+eval $NINJA -j$core install || die Failed to install LLVM tree
 fi 
 
 if test -z "$no_llvm_bin"; then
@@ -168,32 +303,32 @@ msg Create important binaries
 cd $toolchain/bin
 
 for i in clang clang++ clang-cpp; do
-	cp -v clang-13 $target-$i
+	cp -v clang-13 $target-$i || die Failed to copy $target-$i
 done
-for i in ar dwp nm objcopy objdump size strings symbolizer cxxfilt cov ar readobj; do
-	cp -v llvm-$i $target-llvm-$i
+for i in ar as dwp nm objcopy objdump size strings symbolizer cxxfilt cov ar readobj; do
+	cp -v llvm-$i $target-llvm-$i || die Failed to copy $target-llvm-$i
 done
-cp -v llvm-ar $target-llvm-ranlib
-cp -v llvm-objcopy $target-llvm-strip
-cp -v lld $target-ld.lld
-cp -v llvm-readobj $target-llvm-readelf
+cp -v llvm-ar $target-llvm-ranlib || die Failed to copy $target-llvm-ranlib
+cp -v llvm-objcopy $target-llvm-strip || die Failed to copy $target-llvm-strip
+cp -v lld $target-ld.lld || die Failed to copy $target-ld.lld
+cp -v llvm-readobj $target-llvm-readelf || die Failed to copy $target-llvm-readelf
 fi 
 
 if test -z "$no_musl" ; then
 # Source: iglunix/iglunix-bootstrap/boot_musl.sh
 export ORG_CFLAGS="$CFLAGS"
-export CFLAGS="$CFLAGS --ld-path=$toolchain/bin/$target-ld.lld $CPRT_FLAGS \
+export CFLAGS="$CFLAGS --ld-path=$toolchain/bin/$target-ld.lld \
 	-L$toolchain/lib -L$toolchain/lib/clang/$vllvm/lib/linux/ -lclang_rt.builtins-x86_64" # prevent missing symbols
 
 msg Configuring musl
 cd $srcdir/musl-$vmusl/
 CC=$toolchain/bin/$target-clang  \
 	./configure --prefix=/usr \
-	--enable-wrapper=no || exit 1
+	--enable-wrapper=no || die Failed to configure musl
 msg Building musl
-make -j$core || exit 1
+eval $MK -j$core || die Failed to build musl
 msg Installing musl
-make -j$core DESTDIR=$sysdir install || exit 1
+eval $MK -j$core DESTDIR=$sysdir install || die Failed to install musl 
 
 cd $sysdir
 rm -rf $sysdir/lib
@@ -201,60 +336,10 @@ ln -sf usr/lib $sysdir/lib
 
 cd $sysdir/usr/lib/
 for x in ld-musl-$arch.so.1 libc.so.6 libcrypt.so.1 libdl.so.2 libm.so.6 libpthread.so.0 libresolv.so.2; do
-	ln -sr libc.so $x || exit 1
+	ln -sr libc.so $x || die Failed to create symlink $x
 done
 
 mkdir -p $sysdir/usr/bin
-ln -sf ../lib/libc.so $sysdir/usr/bin/ldd
+ln -sf ../lib/libc.so $sysdir/usr/bin/ldd || die Failed to create symlink ldd
 export CFLAGS="$ORG_CFLAGS"
-fi
-
-no_kernel_header=yes
-if test -z "$no_kernel_headers"; then 
-cd $srcdir/linux-$kver
-msg Compiling linux-headers
-make mrproper
-make ARCH=$arch -j$core headers || exit 1
-find usr/include -name '.*' -delete
-rm usr/include/Makefile
-msg Installing linux-headers
-cp -rv usr/include/* $toolchain/include/
-fi
-
-# Stage 2 compiler-rt not working 
-no_stage_compiler_rt=yes 
-if test -z "$no_stage_compiler_rt" ; then 
-# Source: ataraxialinux/crossdev/packages/build_compiler-rt()
-msg Configuring Stage 2 Compiler-RT
-cd $srcdir/compiler-rt
-cmake -S . -B stage2_build \
-	-DCMAKE_INSTALL_PREFIX="$toolchain" \
-	-DCMAKE_BUILD_TYPE=MinSizeRel \
-	-DCMAKE_C_COMPILER="$toolchain/bin/$target-clang" \
-	-DCMAKE_CXX_COMPILER="$toolchain/bin/$target-clang++" \
-	-DCMAKE_AR="$toolchain/bin/$target-llvm-ar"     \
-	-DCMAKE_LINKER="$toolchain/bin/$target-ld.lld"  \
-	-DCMAKE_NM="$toolchain/bin/$target-llvm-nm"     \
-	-DCMAKE_OBJCOPY="$toolchain/bin/$target-llvm-objcopy" \
-	-DCMAKE_OBJDUMP="$toolchain/bin/$target-llvm-objdump" \
-	-DCMAKE_RANLIB="$toolchain/bin/$target-llvm-ranlib"   \
-	-DCMAKE_READELF="$toolchain/bin/$target-llvm-readelf" \
-	-DCMAKE_STRIP="$toolchain/bin/$target-llvm-strip"     \
-	-DCMAKE_FIND_ROOT_PATH="$sysdir" \
-	-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-	-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
-	-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-	-DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
-	-DCOMPILER_RT_BUILD_MEMPROF=OFF \
-	-DCOMPILER_RT_BUILD_PROFILE=OFF \
-	-DCOMPILER_RT_BUILD_SANITIZERS=OFF \
-	-DCOMPILER_RT_BUILD_XRAY=OFF \
-	-DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON \
-	-DCOMPILER_RT_DEFAULT_TARGET_TRIPLE="$target" \
-	-Wno-dev -G "Ninja"
-cd stage2_build 
-msg Building Stage 2 Compiler-RT
-ninja -j$core || exit 1
-msg Installing Stage 2 Compiler-RT
-ninja -j$core install || exit 1
 fi
