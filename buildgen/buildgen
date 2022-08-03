@@ -1,0 +1,280 @@
+#!/bin/sh
+
+info() {
+echo "$1"
+echo "       $2"
+test -n "$3" && echo "       $3"
+}
+
+verbose() {
+if test "$V" != "0"; then 
+	echo $*
+fi
+}
+
+help() {
+echo "Function work with exit code"
+info "die()" "Exit with non-zero code"
+info "code()" "Check code" "fail=y if function failed to execute correctly, abort=y to exit on error"
+echo "Function to test ultilities (<function>cpp for C++ test)" 
+info "gentest()" "Generate a sample test file"
+info "lib()" "Check for libraries" "Contain code() function"
+info "bin()" "Check for binaries"  "Contain code() function"
+info "sysheader()" "Check for system headers" "Contain code() function, set name=<value> for test file, libflags=<libraries> for external libraries"
+info "flags()" "Check if compiler support options"
+info "declaration()" "Check for function declaration" "Contain code() function, set name=<value> for test file, libflags=<libraries> for external libraries, headers=<headers> for needed headers"
+echo "Function to generate build target (use libflags=<libraries> for external libraries)" 
+info "c_target()" "Generate build target for c files"
+info "cxx_target()" "Generate build target for cxx files"
+info "ld_target()" "Generate build target for linking object files"
+info "sharedlib_target()" "Generate build target for shared libraries" "-fPIC is enabled by default"
+info "ar_target() / staticlib_target()" "Generate build target for static libraies"
+echo "Function to complete build script"
+info "initbuild()" "Initial build"
+info "finishbuild()" "Finish list of build targets and the rest of build file"
+info "genvar()" "Add information for build variables"
+}
+
+die() {
+echo ERROR: $*
+exit 1
+}
+
+gentest() {
+cat >> build_tests/test.c << EOF
+#include <stdio.h>
+
+int main() {
+	return 0;
+}
+EOF
+}
+
+code() {
+unset fail
+test $1 == "0" && echo yes || echo no && fail=y 
+test -n "$abort" && die "$2"
+}
+
+lib() {
+cd build_tests
+for l in $*; do
+	echo Checking for -l$l...
+	eval "$CC $CFLAGS -l$l -o test test.c" && ./test
+	code $? "Failed to find -l$l"
+done
+cd ..
+}
+
+bin() {
+for b in $*; do 
+	echo Checking for $b...
+	command -v $b > /dev/null 2>&1
+	code $? "Failed to find $b"
+done
+}
+
+sysheader() {
+echo Check for $h
+cd build_tests
+for h in $*; do 
+	echo "#include <$h>" >> $name.c
+done
+
+cat >> $name.c << EOF 
+
+int main() {
+	return 0; 
+}
+EOF
+eval $CC $CFLAGS $libflags -o $name $name.c && eval ./$name 
+code $? "Failed to compile with \<$1\>"
+cd ..
+}
+
+declaration() {
+cd build_tests
+echo Check if $1 is declared
+for h in $headers; do 
+	echo "#include <$h>" >> $name.c
+done
+
+cat >> $name.c << EOF 
+int main() {
+	if ($1) {
+		return 0;
+	} else {
+		return 1; 
+	}
+}
+EOF
+
+eval "$CC $CFLAGS $libflags -o $name $name.c" && eval ./$name
+code $? "Undefined reference to $name"
+cd ..
+}
+
+flags() {
+cd build_tests 
+for fl in $*; do 
+	echo Checking if compiler supports -"$fl"
+	eval "$CC $CFLAGS -$fl -o test test.c"
+	code "$?" "Compiler does not support -$fl"
+done
+cd ..
+}
+
+custest() {
+testname=$(basename $1)
+output=$(echo $testname | cut -d '.' -f1)
+cd build_tests
+cp -r $1 $testname
+eval $CC $CFLAGS $libflags -o $output $testname && ./$output
+code "$?" "$msg"
+cd ..
+}
+
+libcpp() {
+CC=$CXX CFLAGS=$CXXFLAGS lib $* 
+}
+
+sysheadercpp() {
+CC=$CXX CFLAGS=$CXXFLAGS sysheader $*
+}
+
+declarationcpp() {
+CC=$CXX CFLAGS=$CXXFLAGS deffunc $*
+}
+
+custestcpp() {
+CC=$CXX CFLAGS=$CXXFLAGS custest $*
+}
+
+genvar() { 
+echo "Export varhelp=y to get list of available variables"
+if test "$varhelp" = "y"; then 
+	echo Available variables:
+	for v in DESTDIR:Install-directory PREFIX:Install-prefix $*; do 
+		echo "$(echo $v | cut -d ':' -f 1)" 
+		echo "          $(echo $v | cut -d ':' -f 2 | sed 's/-/ /g')"
+	done
+	exit 0
+fi
+}
+
+append() {
+cat $* >> $buildscript
+}
+
+initbuild() {
+rm -rf $buildscript build_tests 
+mkdir -p build_tests
+cat >> $buildscript << EOF 
+#!/bin/sh
+
+verbose() {
+if test "\$V" != "0"; then 
+	echo \$*
+fi
+}
+EOF
+for t in $*; do 
+	cp -r $t build_tests/ 
+done
+}
+
+finishbuild() {
+cat >> $buildscript << EOF
+
+list_targets() { 
+cat << EOF
+Available build targets: 
+EOF
+
+(cat $buildscript | grep '()' | cut -d '(' -f1 ) >> $buildscript
+
+cat >> $buildscript << EOF 
+OEOF
+} 
+EOF
+sed -i 's/OEOF/EOF/g' $buildscript
+
+cat >> $buildscript << EOF 
+
+help() {
+echo Usage: \$(basename \$0) [VAR=VALUE] action=[target]
+
+echo Use action=list_targets to list all build targets
+} 
+
+eval \$*
+EOF
+}
+
+c_target() {
+test -z $name && name=$(echo $out | sed 's/\./_/g' | sed 's|/|_|g' | sed 's/\-/_/g')
+cat >> $buildscript << EOF 
+$name() {
+	verbose $CC $CFLAGS $buildflags -o $out $*
+	eval $CC $CFLAGS $buildflags -o $out $*
+}
+
+EOF
+unset name
+}
+
+cxx_target() {
+test -z $name && name=$(echo $out | sed 's/\./_/g' | sed 's|/|_|g' | sed 's/\-/_/g')
+cat >> $buildscript << EOF 
+$name() {
+	verbose $CXX $CXXFLAGS $buildflags -o $out $*
+	eval $CXX $CXXFLAGS $buildflags -o $out $*
+}
+
+EOF
+
+unset name
+}
+
+ld_target() {
+test -z $name && name=$(echo $out | sed 's/\./_/g' | sed 's|/|_|g' | sed 's/\-/_/g')
+cat >> $buildscript << EOF
+$name() {
+	verbose $LD $LDFLAGS $buildflags -o $out $* 
+	eval $LD $LDFLAGS $buildflags -o $out $* 
+}
+
+EOF
+
+unset name
+}
+
+sharedlib_target() {
+LDFLAGS="$LDFLAGS -fPIC" ld_target $*
+}
+
+ar_target() {
+test -z $name && name=$(echo $out | sed 's/\./_/g' | sed 's|/|_|g' | sed 's/\-/_/g')
+cat >> $buildscript << EOF 
+$name() {
+	verbose $AR -rc $out $*
+	eval $AR -rc $out $*
+	verbose $RANLIB $out
+	eval $RANLIB $out
+}
+
+EOF
+
+unset name
+}
+
+staticlib_target() {
+ar_target $*
+}
+
+
+if test "$1" = "help"; then 
+	help 
+fi 
+
+test -z $buildscript && buildscript=install-script
