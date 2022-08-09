@@ -32,13 +32,11 @@ if test -n "$help"; then
 	echo "     Download sources          - no if no_download=yes     "
 	echo "     Unpack sources            - no if no_unpack=yes       "
 	echo "     Build compiler-rt         - no if no_compiler_rt=yes  "
-	echo "     Build libunwind           - no if no_libunwind=yes    "
-	echo "     Build libcxxabi           - no if no_libcxxabi=yes    "
 	echo "     Build LLVM tree*          - no if no_llvm=yes         "
 	echo "     Create cross binaries     - no if no_llvm_bin=yes     "
 	echo "     Build Musl libc           - no if no_musl=yes         "
 	echo "-----------------------------------------------------------"
-	echo "*: LLVM tree contains: LLVM, Clang, LLD, libc++"
+	echo "*: LLVM tree contains: LLVM, Clang, LLD"
 	echo "- Controlling variables: "
 	echo "p=<non-empty value>         parallel build"
 	echo "host=<non-empty value>      set host triple"
@@ -97,14 +95,13 @@ srcdir=$workdir/src
 sourcedir=$workdir/sources
 toolchain=$workdir/toolchain
 
-vmusl="1.2.2"
-vllvm="13.0.0"
+vmusl="1.2.3"
+vllvm="14.0.5"
+vllvm_major="$(echo $vllvm | cut -d '.' -f1)"
 
 test -n "$no_download"     && download=no      || download=yes
 test -n "$no_unpack"       && unpack=no        || unpack=yes
 test -n "$no_compiler_rt"  && compiler_rt=no   || compiler_rt=yes
-test -n "$no_libunwind"    && unwind=no        || unwind=yes
-test -n "$no_libcxxabi"    && libcxxabi=no     || libcxxabi=yes
 test -n "$no_llvm"         && llvm=no          || llvm=yes
 test -n "$no_llvm_bin"     && llvm_bin=no      || llvm_bin=yes
 test -n "$no_musl"         && musl=no          || musl=yes
@@ -116,8 +113,6 @@ echo "Clean build               : $clean_build"
 echo "Download sources          : $download"
 echo "Unpack sources            : $unpack"
 echo "Build compiler-rt         : $compiler_rt"
-echo "Build libunwind           : $unwind"
-echo "Build libcxxabi           : $libcxxabi" 
 echo "Build LLVM tree           : $llvm "
 echo "Create cross binaries     : $llvm_bin"
 echo "Build Musl libc           : $musl "
@@ -149,8 +144,6 @@ echo "Ninja builder             : $NINJA"
 echo "Makefile builder          : $MK"
 sleep 5 
 
-
-eval LLVM_CPPFLAGS="-I$toolchain/include"
 if test -n "$clean"; then
 rm -rf $sysdir $toolchain $srcdir
 fi
@@ -181,95 +174,66 @@ mv $srcdir/clang-$vllvm.src llvm/tools/clang
 tar -xf $sourcedir/lld-$vllvm.src.tar.xz
 mv $srcdir/lld-$vllvm.src llvm/tools/lld
 tar -xf $sourcedir/compiler-rt-$vllvm.src.tar.xz
-cp -r $srcdir/compiler-rt-$vllvm.src llvm/projects/compiler-rt
-mv compiler-rt-$vllvm.src compiler-rt
+cp -r compiler-rt-* compiler-rt
 tar -xf $sourcedir/libunwind-$vllvm.src.tar.xz
-mv libunwind-$vllvm.src libunwind
+cp -r libunwind-$vllvm.src libunwind
 tar -xf $sourcedir/libcxx-$vllvm.src.tar.xz
-mv libcxx-$vllvm.src libcxx
-cp -r libcxx llvm/projects/libcxx
+cp -r libcxx-* libcxx
 tar -xf $sourcedir/libcxxabi-$vllvm.src.tar.xz
-mv libcxxabi-$vllvm.src libcxxabi
+cp -r libcxxabi-* libcxxabi
 tar -xf $sourcedir/musl-$vmusl.tar.gz
 fi
 
 if test -z "$no_compiler_rt"; then 
-msg Configuring compiler-rt
-cd $srcdir/compiler-rt
+cd $srcdir/compiler-rt 
 cmake -S . -B build \
-	-DCMAKE_INSTALL_PREFIX=$toolchain \
+	-DCMAKE_INSTALL_PREFIX="$toolchain" \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DLLVM_INCLUDE_BENCHMARKS=OFF \
 	-DCOMPILER_RT_BUILD_BUILTINS=ON \
+	-DCOMPILER_RT_BUILD_CRT=ON \
 	-DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
-	-DCOMPILER_RT_INCLUDE_TESTS=OFF \
 	-DCOMPILER_RT_BUILD_MEMPROF=OFF \
+	-DCOMPILER_RT_BUILD_ORC=OFF \
 	-DCOMPILER_RT_BUILD_PROFILE=OFF \
 	-DCOMPILER_RT_BUILD_SANITIZERS=OFF \
-	-DCOMPILER_RT_BUILD_XRAY=OFF \
 	-DCOMPILER_RT_DEFAULT_TARGET_TRIPLE=$target \
-	-DCOMPILER_RT_DEFAULT_TARGET_ONLY=OFF  \
-	-DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON \
-	-Wno-dev -G "Ninja"
-msg Building compiler-rt
-cd build
-ninja -j$core || die Failed to build compiler-rt
-msg Installing compiler-rt 
-ninja -j$core install || die Failed to install compiler-rt
-fi
-
-if test -z "$no_libunwind"; then 
-# Source: iglunix/iglunix-bootstrap/boot_libunwind.sh
-msg Configuring libunwind
-cd $srcdir/libunwind 
-cmake -S . -B build -DCMAKE_BUILD_TYPE=MinSizeRel \
-	-DCMAKE_INSTALL_PREFIX=$toolchain \
-	-DLIBUNWIND_USE_COMPILER_RT=ON       \
-	-Wno-dev -G "Ninja" || die Failed to configure libunwind
-msg Building libunwind
-cd build
-eval $NINJA -j$core unwind || die Failed to build libunwind
-msg Installing libunwind
-eval $NINJA -j$core install-unwind || die Failed to install libunwind
-
-cd ..
-install -dm755 $toolchain/include/mach-o || die Failed to install libunwind
-# Install header to prevent failure with llvm
-install -Dm755 include/mach-o/compact_unwind_encoding.h $toolchain/include/mach-o/compact_unwind_encoding.h || die Failed to install libunwind
-fi
-
-if test -z "$no_libcxxabi"; then
-msg Configuring libcxxabi 
-cd $srcdir/libcxxabi
-cmake -S . -B build \
-	-DCMAKE_INSTALL_PREFIX=$toolchain \
-	-DLIBCXXABI_USE_COMPILER_RT=ON \
-	-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
-	-DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=YES \
-	-Wno-dev -G "Ninja" || die Failed to configure libcxxabi
-msg Building libcxxabi
+	-DCOMPILER_RT_BUILD_XRAY=OFF \
+	-DCOMPILER_RT_INSTALL_PATH="$toolchain/lib/clang/$vllvm" \
+	-Wno-dev -G "Ninja" || die Failed to configure compiler-rt 
 cd build 
-eval $NINJA -j$core || die Failed to build libcxxabi
-msg Installing libcxxabi 
-eval $NINJA -j$core install || die Failed to install libcxxabi
+eval $NINJA -j$core || die Failed to build compiler-rt
+eval $NINJA -j$core install || die Failed to install compiler-rt
 fi
 
 if test -z "$no_llvm"; then
 # Source: ataraxialinux/crossdev/packages/build_llvm()
-# and iglunix/iglunix-bootstrap/boot-libcxx.sh
-# Build a complete llvm tree
+# Build a working LLVM tree
 msg Configuring LLVM tree 
 cd $srcdir/llvm
+export CFLAGS="$CFLAGS -I$toolchain/include"
+export CXXFLAGS="$CXXFLAGS -I$toolchain/include"
+export LDFLAGS="$LDFLAGS -lunwind -lc++ -lc++abi -L/usr/lib"
+install -dm755 $toolchain/include/mach-o
+install -Dm644 $srcdir/libunwind/include/mach-o/compact_unwind_encoding.h $toolchain/include/mach-o/
 cmake -S . -B build \
 	-DCMAKE_INSTALL_PREFIX="$toolchain" \
-	-DCMAKE_BUILD_TYPE=MinSizeRel \
+	-DCMAKE_BUILD_TYPE=Release \
 	-DLLVM_DEFAULT_TARGET_TRIPLE=$target \
-	-DLLVM_ENABLE_LLD=ON \
+	-DLLVM_DISRIBUTION_COMPONENTS=$comp \
 	-DLLVM_HOST_TRIPLE=$host \
 	-DLLVM_TARGET_ARCH=$arch \
 	-DLLVM_TARGETS_TO_BUILD=$llvm_arch \
 	-DLLVM_INCLUDE_DOCS=OFF \
 	-DLLVM_INCLUDE_EXAMPLES=OFF \
 	-DLLVM_INCLUDE_TESTS=OFF \
+	-DLLVM_ENABLE_OCAMLDOC=OFF \
+        -DLLVM_ENABLE_SPHINX=OFF \
+        -DLLVM_ENABLE_DOXYGEN=OFF \
+        -DLLVM_ENABLE_BINDINGS=OFF \
 	-DLLVM_BUILD_DOCS=OFF \
+	-DLLVM_ENABLE_LLD=ON \
+	-DLLVM_INCLUDE_BENCHMARKS=OFF \
 	-DCLANG_DEFAULT_CXX_STDLIB=libc++ \
 	-DCLANG_DEFAULT_LINKER=ld.lld \
 	-DCLANG_DEFAULT_OBJCOPY=llvm-objcopy \
@@ -277,25 +241,15 @@ cmake -S . -B build \
 	-DCLANG_DEFAULT_UNWINDLIB=libunwind \
 	-DCLANG_INCLUDE_TESTS=OFF \
 	-DCLANG_VENDOR=Hanh \
-	-DLIBCXX_HAS_MUSL_LIBC=ON \
-	-DLIBCXX_USE_COMPILER_RT=ON \
-	-DLIBCXX_CXX_ABI=ON \
-	-DLIBCXX_HAS_ATOMIC_LIB=OFF \
-	-DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=ON \
-	-DLIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY=ON \
-	-DLIBCXX_ABI_LIBRARY_PATH=$toolchain/lib \
-	-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
-	-DLIBCXXABI_USE_COMPILER_RT=ON \
-	-DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=YES \
 	-DENABLE_LINKER_BUILD_ID=ON \
 	-DDEFAULT_SYSROOT=$sysdir \
-	-Wno-dev -G "Ninja" || die Failed to configure LLVM tree
-cd build
-msg Building LLVM tree
+       	-Wno-dev -G "Ninja" || die Failed to configure LLVM tree
+cd $srcdir/llvm/build 
+msg Building LLVM compiler
 eval $NINJA -j$core || die Failed to build LLVM tree
-msg Installing LLVM tree
+msg Installing LLVM compiler
 eval $NINJA -j$core install || die Failed to install LLVM tree
-fi 
+fi
 
 if test -z "$no_llvm_bin"; then
 # Source: ataraxialinux/crossdev/packages/build_llvm()
@@ -303,9 +257,9 @@ msg Create important binaries
 cd $toolchain/bin
 
 for i in clang clang++ clang-cpp; do
-	cp -v clang-13 $target-$i || die Failed to copy $target-$i
+	cp -v clang-$vllvm_major $target-$i || die Failed to copy $target-$i
 done
-for i in ar as dwp nm objcopy objdump size strings symbolizer cxxfilt cov ar readobj; do
+for i in as dwp nm objcopy objdump size strings symbolizer cxxfilt cov ar readobj; do
 	cp -v llvm-$i $target-llvm-$i || die Failed to copy $target-llvm-$i
 done
 cp -v llvm-ar $target-llvm-ranlib || die Failed to copy $target-llvm-ranlib
@@ -317,8 +271,10 @@ fi
 if test -z "$no_musl" ; then
 # Source: iglunix/iglunix-bootstrap/boot_musl.sh
 export ORG_CFLAGS="$CFLAGS"
-export CFLAGS="$CFLAGS --ld-path=$toolchain/bin/$target-ld.lld \
-	-L$toolchain/lib -L$toolchain/lib/clang/$vllvm/lib/linux/ -lclang_rt.builtins-x86_64" # prevent missing symbols
+export CFLAGS="$CFLAGS \
+	-L$toolchain/lib/clang/$vllvm/lib/linux \
+	--ld-path=$toolchain/bin/$target-ld.lld \
+	-lclang_rt.builtins-x86_64" # prevent missing symbols
 
 msg Configuring musl
 cd $srcdir/musl-$vmusl/
