@@ -177,10 +177,13 @@ tar -xf $sourcedir/compiler-rt-$vllvm.src.tar.xz
 cp -r compiler-rt-* compiler-rt
 tar -xf $sourcedir/libunwind-$vllvm.src.tar.xz
 cp -r libunwind-$vllvm.src libunwind
+cp -r libunwind llvm/projects/libunwind
 tar -xf $sourcedir/libcxx-$vllvm.src.tar.xz
 cp -r libcxx-* libcxx
+cp -r libcxx llvm/projects/libcxx
 tar -xf $sourcedir/libcxxabi-$vllvm.src.tar.xz
 cp -r libcxxabi-* libcxxabi
+cp -r libcxxabi llvm/projects/libcxxabi
 tar -xf $sourcedir/musl-$vmusl.tar.gz
 fi
 
@@ -213,14 +216,14 @@ msg Configuring LLVM tree
 cd $srcdir/llvm
 export CFLAGS="$CFLAGS -I$toolchain/include"
 export CXXFLAGS="$CXXFLAGS -I$toolchain/include"
-export LDFLAGS="$LDFLAGS -lunwind -lc++ -lc++abi -L/usr/lib"
 install -dm755 $toolchain/include/mach-o
 install -Dm644 $srcdir/libunwind/include/mach-o/compact_unwind_encoding.h $toolchain/include/mach-o/
 cmake -S . -B build \
+	-DLLVM_INCLUDE_BENCHMARKS=OFF \
+	-DLIBCXX_INCLUDE_BENCHMARKS=OFF \
 	-DCMAKE_INSTALL_PREFIX="$toolchain" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DLLVM_DEFAULT_TARGET_TRIPLE=$target \
-	-DLLVM_DISRIBUTION_COMPONENTS=$comp \
 	-DLLVM_HOST_TRIPLE=$host \
 	-DLLVM_TARGET_ARCH=$arch \
 	-DLLVM_TARGETS_TO_BUILD=$llvm_arch \
@@ -243,6 +246,7 @@ cmake -S . -B build \
 	-DCLANG_VENDOR=Hanh \
 	-DENABLE_LINKER_BUILD_ID=ON \
 	-DDEFAULT_SYSROOT=$sysdir \
+	-DLIBUNWIND_USE_COMPILER_RT=ON \
        	-Wno-dev -G "Ninja" || die Failed to configure LLVM tree
 cd $srcdir/llvm/build 
 msg Building LLVM compiler
